@@ -19,11 +19,6 @@ AGENT_DIRS=(
   "pi|${PI_CODING_AGENT_DIR:-${PI_AGENT_DIR:-$HOME/.pi/agent}}/skills"
 )
 
-# skill|environment variable the skill needs at runtime (doctor only).
-REQUIRED_ENV=(
-  "brave-search|BRAVE_API_KEY"
-)
-
 # pi also reads this directory, and on a name collision keeps one skill only.
 SHARED_SKILLS="$HOME/.agents/skills"
 
@@ -37,7 +32,7 @@ Usage: bin/link.sh [--dry-run|--doctor]
 
   (no option)  Link skills into each agent's skills directory
   --dry-run    Print what would change without writing
-  --doctor     Report link, dependency and environment status
+  --doctor     Report link and dependency status
   -h, --help   Show this help
 EOF
 }
@@ -253,7 +248,7 @@ apply() {
 }
 
 doctor() {
-  local entry agent dir name path current var pi_dir
+  local entry agent dir name path current pi_dir
   for entry in "${AGENT_DIRS[@]}"; do
     agent="${entry%%|*}"
     dir="${entry#*|}"
@@ -282,14 +277,6 @@ doctor() {
       problem deps - "skills/$name has no node_modules"
     fi
   done < <(skill_names)
-
-  for entry in "${REQUIRED_ENV[@]}"; do
-    name="${entry%%|*}"
-    var="${entry#*|}"
-    if is_skill "$name" && [[ -z "${!var:-}" ]]; then
-      problem env - "$var is not set ($name needs it)"
-    fi
-  done
 
   pi_dir="$(agent_dir pi)"
   for path in "$pi_dir"/*; do

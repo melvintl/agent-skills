@@ -215,7 +215,6 @@ class LinkTest(unittest.TestCase):
 
     def test_doctor_reports_each_state_and_changes_nothing(self):
         self.skill("node", node=True)
-        self.skill("brave-search")
         self.link()
         (self.claude / "shared").unlink()
         (self.pi / "shared").unlink()
@@ -233,20 +232,17 @@ class LinkTest(unittest.TestCase):
         self.assertRegex(out, r"stale\s+claude\s+pi-only")
         self.assertRegex(out, r"ok\s+pi\s+pi-only")
         self.assertRegex(out, r"deps\s+-\s+skills/node")
-        self.assertIn("BRAVE_API_KEY is not set", out)
         self.assertRegex(out, r"clash\s+pi\s+node")
         self.assertFalse((self.claude / "shared").exists())
         self.assertTrue((self.claude / "pi-only").is_symlink())
 
-    def test_doctor_accepts_set_env_and_flags_whole_directory_link(self):
-        self.skill("brave-search")
+    def test_doctor_flags_whole_directory_link(self):
         self.pi.parent.mkdir(parents=True)
         self.pi.symlink_to(self.elsewhere)
 
-        result = self.run_link("--doctor", env={"BRAVE_API_KEY": "k"})
+        result = self.run_link("--doctor")
 
         self.assertEqual(result.returncode, 1)
-        self.assertNotIn("BRAVE_API_KEY", result.stdout)
         self.assertRegex(result.stdout, r"unlinked\s+pi")
         self.assertTrue(self.pi.is_symlink())
 

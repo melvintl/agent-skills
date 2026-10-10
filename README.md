@@ -21,7 +21,7 @@ make link
 | --- | --- |
 | `make link` | Link skills into each agent's skills directory |
 | `make link-dry-run` | Print what `link` would change, without writing |
-| `make doctor` | Report link, dependency and environment status |
+| `make doctor` | Report link and dependency status |
 | `make check` | Lint scripts, validate skills, run tests (what CI runs) |
 
 ## Layout
@@ -40,7 +40,6 @@ make link
 A skill is linked to every agent unless `skills.conf` says otherwise:
 
 ```
-brave-search   pi
 browser-tools  pi
 ```
 
@@ -71,9 +70,3 @@ To support another agent, add a line to `AGENT_DIRS` in `bin/link.sh`.
 2. If it is not for every agent, add a line to `skills.conf`.
 3. If it is copied from another repo, record the source in `UPSTREAM.md`.
 4. Run `make check` and `make link`.
-
-## Secrets
-
-Nothing secret lives here. `brave-search` reads `BRAVE_API_KEY` from the
-environment; set it in a local shell file that is not committed. `make doctor`
-reports when it is missing.
