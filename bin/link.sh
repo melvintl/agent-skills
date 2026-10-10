@@ -54,7 +54,7 @@ if (($# > 1)); then
   exit 2
 fi
 
-report() { printf '%s%-8s %-7s %s\n' "$PREFIX" "$1" "$2" "$3"; }
+report() { printf '%-14s %-7s %s\n' "$PREFIX$1" "$2" "$3"; }
 problem() { report "$@"; problems=$((problems + 1)); }
 die() { echo "error: $*" >&2; exit 2; }
 
