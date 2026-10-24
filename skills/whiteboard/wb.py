@@ -4,7 +4,7 @@
   wb.py collect [--base REF] [--head REF | --worktree] [--repo DIR] [--out DIR]
       Parse the diff into addressable hunks, map each hunk to the symbols it
       touches, and use difftastic (structural, tree-sitter based) to flag hunks
-      that are formatting-only noise. Writes <out>/hunks.json and prints a
+      with no detected structural change. Writes <out>/hunks.json and prints a
       compact listing for the agent to plan the walkthrough from.
 
   wb.py render [--out DIR] [--no-open] [--check] [--shot]
@@ -444,10 +444,75 @@ def plain_language_report(spec):
         fields.append((f"chapter {ch['id']!r}", ch.get("narrative", "")))
         fields.append((f"chapter {ch['id']!r} hints", " ".join(ch.get("review_hints", []))))
     fields += [(f"check item {i + 1}", c.get("text", "")) for i, c in enumerate(spec.get("check", []))]
+    brief = spec.get("briefing") or {}
+    fields += [(f"briefing {k}", brief.get(k, "")) for k in ("before", "after", "unchanged")]
+    fields.append(("briefing consequences", " ".join(brief.get("consequences", []))))
+    review = spec.get("review") or {}
+    fields += [(f"review {k}", review.get(k, "")) for k in ("rationale", "challenge", "limits")]
+    fields += [(f"review finding {i + 1}", f.get("text", "")) for i, f in enumerate(review.get("findings", []))]
+    fields += [(f"validation result {i + 1}", v.get("result", "")) for i, v in enumerate(review.get("validation", []))]
+    fields += [(f"decision {i + 1}", " ".join(str(value or "") for value in
+                [d.get("choice"), d.get("why"), *(d.get("alternatives") or [])]))
+               for i, d in enumerate(spec.get("decisions", []))]
     for where, text in fields:
         d, words = code_density(text)
         if words >= 25 and d > JARGON_LIMIT:
             yield where, round(d, 1), words
+
+
+def review_errors(spec, unexplained):
+    """Validate new review data; legacy specs remain renderable without a verdict."""
+    errors = []
+    for decision in spec.get("decisions", []):
+        if "basis" in decision and decision["basis"] not in ("documented", "inferred", "unknown"):
+            errors.append("decision basis must be documented, inferred, or unknown when present")
+    if "briefing" in spec:
+        brief = spec["briefing"]
+        if not isinstance(brief, dict):
+            errors.append("briefing must be an object")
+        else:
+            for key in ("before", "after", "unchanged"):
+                if not isinstance(brief.get(key), str) or not brief[key].strip():
+                    errors.append(f"briefing.{key} must be non-empty text")
+            if not isinstance(brief.get("consequences"), list) or not all(
+                    isinstance(x, str) and x.strip() for x in brief.get("consequences", [])):
+                errors.append("briefing.consequences must be a list of text")
+    if "review" not in spec:
+        return errors
+    review = spec["review"]
+    if not isinstance(review, dict):
+        return errors + ["review must be an object"]
+    verdict = review.get("verdict")
+    if verdict not in ("ready to merge", "changes needed", "insufficient evidence"):
+        errors.append("review.verdict must be ready to merge, changes needed, or insufficient evidence")
+    for key in ("rationale", "challenge", "limits"):
+        if not isinstance(review.get(key), str) or not review[key].strip():
+            errors.append(f"review.{key} must be non-empty text")
+    findings = review.get("findings")
+    if not isinstance(findings, list):
+        errors.append("review.findings must be a list")
+        findings = []
+    for item in findings:
+        if (not isinstance(item, dict) or item.get("kind") not in ("blocker", "suggestion", "question")
+                or not isinstance(item.get("text"), str) or not item["text"].strip()):
+            errors.append("each review finding needs kind (blocker/suggestion/question) and non-empty text")
+        if isinstance(item, dict) and (not isinstance(item.get("hunks", []), list)
+                or not all(isinstance(ref, str) for ref in item.get("hunks", []))):
+            errors.append("review finding hunks must be a list of strings")
+    blockers = any(isinstance(f, dict) and f.get("kind") == "blocker" for f in findings)
+    if verdict == "ready to merge" and (blockers or unexplained):
+        errors.append("ready to merge is incompatible with blockers or unexplained non-noise hunks")
+    if verdict == "changes needed" and not blockers:
+        errors.append("changes needed requires a concrete blocker; use insufficient evidence for uncertainty")
+    validation = review.get("validation")
+    if not isinstance(validation, list):
+        errors.append("review.validation must be a list (empty if no checks attempted)")
+        validation = []
+    for item in validation:
+        if (not isinstance(item, dict) or item.get("status") not in ("passed", "failed", "blocked", "skipped")
+                or any(not isinstance(item.get(k), str) or not item[k].strip() for k in ("command", "result"))):
+            errors.append("each validation entry needs command, status (passed/failed/blocked/skipped), and result")
+    return errors
 
 
 def cmd_render(a):
@@ -488,31 +553,37 @@ def cmd_render(a):
         for fr in (ch.get("trace") or {}).get("frames", []):
             if fr.get("hunk"):
                 fr["hunk"] = (resolve(fr["hunk"], f"{where} trace frame") or [None])[0]
-    for sec in ("decisions", "check"):
-        for item in spec.get(sec, []):
+    # Fail on malformed review data before attempting to resolve its references.
+    errors.extend(review_errors(spec, []))
+    if errors:
+        print("wb: spec errors (fix these and re-run render):", *errors, sep="\n  ", file=sys.stderr)
+        sys.exit(1)
+    for sec, items in (("decisions", spec.get("decisions", [])), ("check", spec.get("check", [])),
+                       ("review findings", (spec.get("review") or {}).get("findings", []))):
+        for item in items:
             item["hunks"] = [i for r in item.get("hunks", []) for i in resolve(r, sec)]
     for d in spec.get("overview_diagrams", []):
         d["links"] = {k: (resolve(v, f"overview diagram link {k!r}") or [None])[0]
                       for k, v in d.get("links", {}).items()}
 
     # [plain words](#hunk:REF) links inside any markdown field must resolve too
-    def md_fields():
-        yield "summary", spec.get("summary", "")
-        for ch in spec.get("chapters", []):
-            for k in ("narrative", "risk_note", "under_the_hood"):
-                yield f"chapter {ch['id']!r} {k}", ch.get(k, "")
-            for x in ch.get("review_hints", []):
-                yield f"chapter {ch['id']!r} hint", x
-        for sec in ("decisions", "check"):
-            for item in spec.get(sec, []):
-                yield sec, " ".join(str(item.get(k, "")) for k in ("why", "text", "choice"))
-    for where, text in md_fields():
+    def md_fields(value, where="spec"):
+        if isinstance(value, str):
+            yield where, value
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                yield from md_fields(child, f"{where}.{key}")
+        elif isinstance(value, list):
+            for i, child in enumerate(value):
+                yield from md_fields(child, f"{where}[{i}]")
+    for where, text in md_fields(spec):
         for ref in re.findall(r"\(#hunk:([^)\s]+)\)", text or ""):
             resolve(ref, f"{where} link")
 
     noise = [h["id"] for h in data["hunks"] if h["noise"] and h["id"] not in covered]
     unexplained = [h["id"] for h in data["hunks"] if not h["noise"] and h["id"] not in covered]
 
+    errors.extend(review_errors(spec, unexplained))
     if errors:
         print("wb: spec errors (fix these and re-run render):", *errors, sep="\n  ", file=sys.stderr)
         sys.exit(1)
@@ -537,7 +608,7 @@ def cmd_render(a):
         print(f"plain language: {where} has {n} code terms per 100 words (aim for 5 or fewer; "
               f"move detail to under_the_hood)")
     print(f"coverage: {len(covered)}/{len(data['hunks'])} hunks in chapters, "
-          f"{len(noise)} formatting noise, {len(unexplained)} unexplained")
+          f"{len(noise)} structurally unchanged, {len(unexplained)} unexplained (accounting, not correctness)")
     if unexplained:
         print("unexplained hunks (assign them to a chapter, or the page shows them in red):")
         for u in unexplained:
