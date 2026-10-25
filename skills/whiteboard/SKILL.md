@@ -1,14 +1,16 @@
 ---
 name: whiteboard
-description: Build a visual, guided walkthrough of a code change (branch, PR, commit range, or uncommitted work) as a local HTML page with diagrams, call traces, structural diffs and a coverage check, plus a PR description. Use when the user says "whiteboard", asks to explain/visualize/walk through a diff, branch or PR, wants to understand a large (often agent-written) change without reading it line by line, or wants a PR description for a big change.
+description: Quickly review a large code change (branch, PR, commit range, or uncommitted work) through a visual briefing, guided walkthrough, main decisions, main risks and an evidence-backed merge assessment, plus a PR description. Use when the user says "whiteboard", asks to explain/visualize/walk through a diff, branch or PR, wants to understand a large (often agent-written) change without reading it line by line, or wants a PR description for a big change.
 argument-hint: "[PR number | base..head | --worktree] [focus]"
 ---
 
 # Whiteboard
 
-You turn a diff into a page the user can *walk through* instead of read. The work splits cleanly:
+Your primary objective is to make large, often agent-written PRs quick for a human to review, without hiding uncertainty. The user knows the existing architecture. Explain what changes, how the changed pieces fit together, which decisions matter, and whether the evidence supports merging. Do not reteach the project or turn the page into a prettier file-by-file diff.
 
-- **`wb.py collect`** (mechanical): splits the diff into addressable hunks, maps each to the symbols it touches, and uses difftastic (tree-sitter structural diff) to flag formatting-only hunks.
+Optimize the reader's time, not the depth of your investigation. There is no effort-budget setting. Put a compact briefing first, the guided walkthrough second, and the main decisions, main risks and detailed merge assessment near the end. Keep code and supporting inventories collapsed until needed. The work splits cleanly:
+
+- **`wb.py collect`** (mechanical): splits the diff into addressable hunks, maps each to the symbols it touches, and uses difftastic (tree-sitter structural diff) to flag likely formatting/comment-only hunks. This is a structural classification, not proof that a change is irrelevant.
 - **You** (understanding): read the change and write `spec.json`, which holds the story, chapters, diagrams, traces, decisions and risks.
 - **`wb.py render`** (mechanical): validates the spec against the real diff, renders `index.html` and `pr-description.md`, and opens the browser.
 
@@ -27,14 +29,21 @@ Pick the range from the user's request:
 | explicit range | `wb.py collect --base A --head B` |
 | GitHub PR N | `git fetch origin pull/N/head:pr-N`, base = `origin/$(gh pr view N --json baseRefName -q .baseRefName)`, then `--base … --head pr-N`. If the PR is already merged, the merge-base equals head; use `--base pr-N~<commits>` or the PR's base commit instead. |
 
-Run from inside the repo (or pass `--repo`). Output goes to `~/.cache/whiteboard/<repo>/<head>/` unless you pass `--out`. The printed listing shows every hunk id (`path#N`), its +/- counts, the symbols it touches (`added`/`removed`/modified), and `NOISE` for formatting-only hunks. Binary changes, renames, mode changes and files with no textual patch get addressable metadata hunks too; these count toward coverage and are never noise. Their code cards show Git's change metadata rather than a textual diff.
+Run from inside the repo (or pass `--repo`). Output goes to `~/.cache/whiteboard/<repo>/<head>/` unless you pass `--out`. The printed listing shows every hunk id (`path#N`), its +/- counts, the symbols it touches (`added`/`removed`/modified), and `NOISE` for hunks with no detected structural change. Binary changes, renames, mode changes and files with no textual patch get addressable metadata hunks too; these count toward coverage and are never noise. Their code cards show Git's change metadata rather than a textual diff.
 
 ## 2. Understand the change
 
-Read the actual diff (`git diff <merge-base> <head> -- <paths>`), not just the listing. Read surrounding code where a hunk's meaning depends on callers or callees. For large diffs, go file group by file group. Source first, then tests, since tests tell you the intended contract.
+Read the actual diff (`git diff <merge-base> <head> -- <paths>`), not just the listing. Read surrounding code where a hunk's meaning depends on callers or callees. For large diffs, investigate in coherent groups, but present behavior and dependency order, not file order. Inspect source and tests together: tests are evidence of intended contracts, not proof that the implementation satisfies them.
+
+Treat the PR description and the author's or agent's explanation as claims to investigate. Reconstruct behavior independently. Distinguish observed behavior, documented intent, inferred rationale, and unknowns. Never present a plausible reason as the author's verified decision. Link consequential claims to code or test hunks; for unchanged supporting code, cite its path and symbol or line in the explanation.
+
+Discover the repository's existing validation commands from its own configuration and documentation. Run relevant tests, lint and type checks when practical. Run them against the collected revision or working-tree snapshot, not an unrelated current checkout. If the checkout differs, use an existing matching checkout or report the checks as blocked; never overwrite user changes. Recollect if the reviewed snapshot changes during analysis. Record the command, actual result and scope; distinguish tests read from tests run. Do not automatically install dependencies, access credentials, or run checks requiring external services. Report blocked or skipped checks and unrelated failures honestly. Browser verification in step 4 checks the page, not the PR.
+
+After drafting the explanation, perform a separate **challenge pass**: seek contradictions, unreachable new code, wiring gaps, old paths bypassing new behavior, deleted guarantees, regressions, and changes unnecessary for the stated goal. Check at least one concrete end-to-end scenario through the changed pieces, including a relevant failure path. Record what you investigated and any remaining uncertainty; this pass need not use another agent.
 
 Find out, and write down only what you verified:
-- What the change does in behavior terms, and what *doesn't* change.
+- What the change does in behavior terms, and what *doesn't* change. Start with one concrete before/after example and the biggest design consequences.
+- For each behavior-oriented chapter: the trigger, outcome or side effect, failure behavior, and relevant test evidence. Put these in its narrative or technical detail, not a repetitive form the reader must wade through.
 - The order a reader needs: what the new concept is, then where it's wired in, then what tests cover it. Use dependency order, not file order.
 - The call paths a request or event takes through changed code.
 - Which tests exercise new behavior and which only pin existing behavior. Agent-written PRs often have a lot of the second kind.
@@ -47,7 +56,21 @@ Find out, and write down only what you verified:
   "title": "Short name of the change",          // `backticks` render as code
   "risk": "low|medium|high",
   "summary": "markdown: what and why in 3-6 sentences; say explicitly if behavior does NOT change",
-  "overview_diagrams": [ /* diagram objects, optional, e.g. a module map */ ],
+  "briefing": {
+    "before": "markdown: one concrete example before this change",
+    "after": "markdown: the same example after this change",
+    "unchanged": "markdown: important guarantees that stay the same",
+    "consequences": ["markdown: the most important new design or operational consequences"]
+  },
+  "review": {
+    "verdict": "ready to merge|changes needed|insufficient evidence",
+    "rationale": "markdown: concise evidence-backed explanation; link key findings",
+    "findings": [{ "kind": "blocker|suggestion|question", "text": "markdown: consequence, evidence, and action needed", "hunks": ["path#N"] }],
+    "validation": [{ "command": "exact command attempted or skipped, including relevant cwd", "status": "passed|failed|blocked|skipped", "result": "plain-language result, scope, and reason if not run" }],
+    "challenge": "markdown: what the challenge pass investigated and found",
+    "limits": "markdown: unverified behavior, tests only inspected, remaining uncertainty; explicitly say if none identified"
+  },
+  "overview_diagrams": [ /* diagram objects, optional; explain the architectural delta, not the existing system */ ],
   "chapters": [{
     "id": "slug",
     "title": "…", "summary": "one line", "risk": "low|medium|high",
@@ -66,19 +89,21 @@ Find out, and write down only what you verified:
     "hunk_notes": { "path#N": "one-line note shown above that hunk" },
     "hunks": ["path#N", "path#2-5", "whole/file.py"]           // the code behind this chapter
   }],
-  "decisions": [{ "title": "…", "choice": "…", "why": "markdown", "alternatives": ["…"], "hunks": ["path#N"] }],
+  "decisions": [{ "title": "…", "choice": "…", "basis": "documented|inferred|unknown", "why": "markdown: source of documented rationale, or explicitly labeled inference/unknown", "alternatives": ["documented alternative, or explicitly labeled possible alternative"], "hunks": ["path#N"] }],
   "check": [{ "risk": "high", "text": "markdown: what a human should verify and why", "hunks": ["path#N"] }],
   "pr_description": "markdown PR body; end with the attribution line from the system prompt if one is given"
 }
 ```
 
+For new specs, label each decision's `basis` as `documented`, `inferred`, or `unknown`. The renderer accepts an omitted `basis` for legacy specs and displays "rationale not classified"; any supplied value must be one of those three (not null or free-form text).
+
 Hunk refs: `path#N` (one hunk), `path#N-M` (inclusive range; every hunk must exist), `path` (all hunks in a file, including metadata hunks). They work in `hunks` lists, in diagram `links`, and in markdown links of the form `[plain words](#hunk:path#N)`. `render` validates all three.
 
 ## Voice: write for someone who hasn't read the code
 
-The reader knows what the project is for. They haven't read this code, and they don't want to; if the page reads like the code, they might as well open the diff. Every visible sentence should still make sense to them.
+The reader knows the project and its existing architecture, but hasn't read this PR. Don't recap familiar architecture; explain new concepts and changed relationships. If the page reads like the code, they might as well open the diff. Every visible sentence should make the change or the merge decision easier to understand.
 
-**Two layers.** `summary`, `narrative`, `review_hints`, `check` and `decisions` are the plain layer, and they're what the reader sees. Each chapter's `under_the_hood` is the technical layer, collapsed by default. Function names, regexes, hook names, data formats and line-level mechanics go there. A reader who stops at the plain layer should still know what changed, why, and what could go wrong.
+**Two layers.** `summary`, `briefing`, `review`, `narrative`, `review_hints`, `check` and `decisions` are the plain layer, and they're what the reader sees. Exact validation commands are evidence and may stay technical. Each chapter's `under_the_hood` is the technical layer, collapsed by default. Function names, regexes, hook names, data formats and line-level mechanics go there. A reader who stops at the plain layer should still know what changed, why, and what could go wrong.
 
 In the plain layer:
 - **Lead with the effect, then the reason.** Write "Plan mode only checks how a command *starts*, so anything chained after a harmless start still runs", not "`isSafeCommand` tests SAFE_PATTERNS with a `^` anchor".
@@ -93,7 +118,11 @@ In the plain layer:
 
 ### Authoring rules
 - **Cover every non-noise hunk, including metadata hunks.** Explain binary assets, renamed paths, executable-bit changes and empty-file changes where applicable. Each one belongs to some chapter. `render` lists leftovers, and the page shows them in a red "Unexplained changes" section. Aim for zero, but never stretch a chapter's narrative to absorb a hunk you don't understand; leaving it unexplained is the honest result.
-- **4 to 9 chapters** for a typical PR. Each one should have a title that states a claim ("Option now tracks explicit names") rather than a topic ("core.py changes").
+- **Use as few chapters as the behavior requires.** Four to nine may suit a large PR, but do not force a quota. Each chapter should state a claim ("Option now tracks explicit names"), not a file topic. Group generated files, mechanical edits and repetitive tests compactly; keep their code collapsed.
+- **The opening is the fast review route.** Require `briefing` and `review` for new specs. Keep the summary, example, consequences and verdict short enough to scan without reading chapters. Link to the details rather than repeating them.
+- **Preserve Main decisions and Main risks near the end.** `decisions` explains consequential choices and trade-offs; `check` holds the main risks, assumptions and human checks, phrased as consequences. Keep both arrays present, even when empty; explicitly state when no material decisions or risks were identified. Don't merge them into a generic findings list.
+- **Give an evidence-backed merge recommendation.** `changes needed` requires a concrete correctness, security, compatibility or operational blocker. Stylistic preferences are suggestions, not blockers. Use `insufficient evidence` when critical behavior remains unverified; do not fabricate a defect. `ready to merge` means the investigated scope supports merging, not a guarantee of correctness. Unexplained non-noise hunks preclude that verdict. `review.findings` separates blockers, suggestions and unresolved questions; do not duplicate the full risk list there.
+- **Coverage is accounting, not correctness.** Explain every meaningful change, including comments or directives classified as noise. Inspect those classifications before excluding them. Separately report test evidence and checks actually run; 100% chapter coverage is never a reason to approve.
 - **One focused diagram per chapter at most**, with no more than about 15 nodes. Choose the type by what you're explaining:
   - `sequenceDiagram`: calls or messages across components. Use this for runtime flow.
   - `flowchart`: decisions, pipelines, data flow.
@@ -103,7 +132,7 @@ In the plain layer:
 - **Trace** is for "follow one concrete request through the stack". Mark the changed frames and link them to hunks. Its frames are code-level by nature, so use one only when the path matters to the reader; otherwise describe the flow in plain steps and put the call chain in `under_the_hood`.
 - **Link diagram nodes** to the hunks that implement them. The link key must equal the node's rendered text exactly (case-insensitive), so keep linked labels on one line, with no `<br/>`.
 - **Mermaid hygiene:** quote labels that contain punctuation (`A["foo(bar)"]`); don't use `end` as a node id; in sequence diagrams use `participant X as Display Name` and link on the display name.
-- `check` is where the walkthrough earns trust. List behavior changes at the edges, risky assumptions, things the tests don't cover, and anything you're unsure of. Don't pad it.
+- `check` is the **Main risks** section. List behavior changes at the edges, risky assumptions, things the tests don't cover, and anything you're unsure of. Say what a human should verify and why. Don't pad it. Keep the **Main decisions** section equally selective and explicitly label inferred rationale.
 - Explain in behavior terms ("now warns when…"). Don't paraphrase the code line by line, since the user can expand the code. Follow **Voice** above for everything outside `under_the_hood`.
 
 ## 4. Render and verify
@@ -112,7 +141,7 @@ In the plain layer:
 wb.py render --out <out> --check
 ```
 
-- Exit 1 means invalid hunk refs. Fix the spec and re-run.
+- Exit 1 means invalid hunk refs, malformed briefing/review data, an invalid decision basis, or an inconsistent verdict (for example, approval with unexplained changes). Fix the spec and re-run. Legacy specs without the new sections still render, explicitly marked as not assessed.
 - `plain language:` lines mean a visible field reads like code. Rewrite it, or move the detail into `under_the_hood`, before you finish.
 - The check expands all code cards and verifies diff rendering as well as diagrams and diagram links.
 - Exit 2 means verification failed: rendering errors, unmatched diagram-link labels, unavailable page libraries, or no Chromium-based browser. Read the reported reason, fix it and re-run; a missing browser is not successful verification.
@@ -124,8 +153,9 @@ wb.py render --out <out> --check
 
 Tell the user, briefly:
 - The page path (`<out>/index.html`) and `pr-description.md`.
-- The coverage line (chapters / noise / unexplained), and confirm there are no `plain language:` warnings left.
-- The 1-3 most important `check` items, in one line each.
+- The merge recommendation, key supporting evidence and material validation limitations.
+- The coverage line (chapters / structurally unchanged / unexplained), explicitly an accounting check rather than proof of correctness, and confirm there are no `plain language:` warnings left.
+- The 1-3 most important main risks or blockers, in one line each. Do not paste the full assessment.
 - On first use, mention the page's keys: `j`/`k` move between chapters, `/` jumps to any file or symbol, `u` goes back after a jump, and `?` lists the rest.
 
 Don't paste the walkthrough into the terminal; the page is the deliverable.

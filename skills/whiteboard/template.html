@@ -411,10 +411,11 @@ function renderSide() {
   });
   h += `</ol><div class="group">Reference</div><ol>`;
   const ref = (id, label, count, cls = "") => `<li><a href="#${id}" data-sec="${id}" class="${cls}"><span class="num">${cls ? "!" : "·"}</span><span>${label}</span>${count !== undefined ? `<span class="count">${count}</span>` : ""}</a></li>`;
-  if ((S.decisions || []).length) h += ref("decisions", "Decisions", S.decisions.length);
-  if ((S.check || []).length) h += ref("check", "Check yourself", S.check.length);
+  h += ref("decisions", "Main decisions", (S.decisions || []).length);
+  h += ref("check", "Main risks", (S.check || []).length);
+  h += ref("assessment", "Merge assessment", (S.review?.findings || []).length);
   if (D.unexplained.length) h += ref("unexplained", "Unexplained changes", D.unexplained.length, "warn");
-  if (D.noise.length) h += ref("noise", "Formatting noise", D.noise.length);
+  if (D.noise.length) h += ref("noise", "Structurally unchanged", D.noise.length);
   if (S.pr_description) h += ref("pr", "PR description");
   h += `</ol><div class="side-foot">Press <kbd>?</kbd> for shortcuts · <kbd>/</kbd> to jump</div>`;
   $("#side").innerHTML = h;
@@ -454,7 +455,7 @@ function hunkCard(id, note) {
   const ch = hunkChapter[id];
   return `<div class="hunk" id="${hid(id)}-${hunkInstance++}" data-id="${esc(id)}">
     <div class="hunk-head" title="Click to fold"><span class="fold">▾</span><span class="p">${esc(h.file)}<span>#${h.index}</span></span>${syms}
-      ${h.noise ? `<span class="badge" title="difftastic found no structural change">formatting only</span>` : ""}
+      ${h.noise ? `<span class="badge" title="No structural change detected; comments and directives may still matter">structurally unchanged</span>` : ""}
       <span class="delta"><span class="add">+${h.added}</span> <span class="del">−${h.removed}</span></span>
       <button data-copy="${esc(cmd)}" title="${esc(cmd)}">copy nvim</button></div>
     ${note ? `<div class="hunk-note">${esc(note)}</div>` : ""}
@@ -731,6 +732,34 @@ function codeBlock(ids, label, open, notes) {
     <div class="hunks">${ids.map(i => hunkCard(i, notes && notes[i])).join("")}</div></details>`;
 }
 
+// ---------------------------------------------------------- review briefing
+function verdictBlock(showLinks = true) {
+  const r = S.review;
+  if (!r) return `<div class="hints"><b class="h">Not assessed</b><p>This older walkthrough has no merge assessment. Change coverage is not approval.</p></div>`;
+  return `<div class="hints"><b class="h">Merge recommendation: ${esc(r.verdict)}</b><div class="prose">${md(r.rationale)}</div>
+    ${showLinks ? `<p><a href="#assessment">Review evidence and limitations ↓</a> · <a href="#decisions">Main decisions</a> · <a href="#check">Main risks</a></p>` : ""}</div>`;
+}
+function briefingBlock() {
+  const b = S.briefing;
+  if (!b) return "";
+  return `<div class="card" style="padding:16px"><h4>Before → after</h4><div class="prose"><b>Before</b>${md(b.before)}<b>After</b>${md(b.after)}
+    <b>What stays the same</b>${md(b.unchanged)}${b.consequences.length ? `<h4>Biggest consequences</h4><ul>${b.consequences.map(x => `<li>${mdInline(x)}</li>`).join("")}</ul>` : ""}</div></div>`;
+}
+function assessmentBlock() {
+  const r = S.review;
+  let h = `<section class="block" id="assessment" data-label="Merge assessment"><div class="eyebrow">Assess whether to merge</div><h3 class="ch">Merge assessment</h3>${verdictBlock(false)}`;
+  if (r) {
+    for (const [kind, label] of [["blocker", "Blockers"], ["suggestion", "Non-blocking suggestions"], ["question", "Unresolved questions"]]) {
+      const items = r.findings.filter(f => f.kind === kind);
+      h += `<h4>${label}</h4>` + (items.length ? items.map(f => `<div class="hints"><div class="prose">${md(f.text)}</div>${refs(f.hunks)}</div>`).join("") : `<p class="lede">None identified.</p>`);
+    }
+    h += `<h4>Validation actually attempted</h4>`;
+    h += r.validation.length ? r.validation.map(v => `<div class="card" style="padding:12px"><span class="badge">${esc(v.status)}</span> <code>${esc(v.command)}</code><div class="prose">${md(v.result)}</div></div>`).join("") : `<p class="lede">No automated checks recorded. Tests inspected are not tests run.</p>`;
+    h += `<h4>Challenge pass</h4><div class="prose">${md(r.challenge)}</div><h4>Evidence limitations</h4><div class="prose">${md(r.limits)}</div>`;
+  }
+  return h + `<p class="lede">Hunk coverage accounts for changes; it does not prove correctness. Page rendering checks do not validate the PR.</p></section>`;
+}
+
 // -------------------------------------------------------------------- main
 function renderMain() {
   const nh = Object.keys(H).length;
@@ -738,16 +767,18 @@ function renderMain() {
     <h1>${tx(S.title || "Change walkthrough")}</h1>
     ${RISK(S.risk) ? `<div class="eyebrow risk-${S.risk}"><span class="badge risk">overall risk: ${S.risk}</span></div>` : ""}
     <div class="prose">${md(S.summary)}</div>
+    ${briefingBlock()}${verdictBlock()}
+    <details class="uth"><summary><b>Change accounting</b><span>files, line counts and chapter coverage—not correctness</span></summary>
     <div class="stats">
       <div class="stat"><b>${D.files.length}</b><span>files</span></div>
       <div class="stat"><b class="add">+${totalA}</b><span>lines added</span></div>
       <div class="stat"><b class="del">−${totalR}</b><span>lines removed</span></div>
       <a class="stat" href="#ch-${esc(chapters[0]?.id || "")}"><b>${chapters.length}</b><span>chapters · ${nh} hunks</span></a>
-      ${D.noise.length ? `<a class="stat" href="#noise">` : `<div class="stat">`}<b>${D.noise.length}</b><span>formatting-only hunks</span>${D.noise.length ? "</a>" : "</div>"}
+      ${D.noise.length ? `<a class="stat" href="#noise">` : `<div class="stat">`}<b>${D.noise.length}</b><span>structurally unchanged hunks</span>${D.noise.length ? "</a>" : "</div>"}
       ${D.unexplained.length ? `<a class="stat bad" href="#unexplained">` : `<div class="stat">`}<b>${D.unexplained.length}</b><span>unexplained hunks</span>${D.unexplained.length ? "</a>" : "</div>"}
-    </div>`;
+    </div></details>`;
   for (const d of S.overview_diagrams || []) h += diagramCard(d);
-  h += `<h4>Change map</h4><div class="card" style="padding:4px 10px;overflow-x:auto"><table class="filemap">`;
+  h += `<details class="uth"><summary><b>Change map</b><span>supporting file inventory</span></summary><div class="card" style="padding:4px 10px;overflow-x:auto"><table class="filemap">`;
   const maxL = Math.max(1, ...D.files.map(f => f.added + f.removed));
   for (const f of D.files) {
     const chs = [...new Set(f.hunks.map(x => hunkChapter[x]).filter(x => x !== undefined))];
@@ -756,18 +787,18 @@ function renderMain() {
       ${f.status !== "modified" ? `<span class="st"> ${esc(f.status)}</span>` : ""}${f.old_path !== f.path ? `<span class="st"> from ${esc(f.old_path)}</span>` : ""}</td>
       <td><div class="chips">${chs.map(i => `<span class="chip" style="background:${color(i)}" data-goto="ch-${esc(chapters[i].id)}" title="${esc(plain(chapters[i].title))}">${i + 1}</span>`).join("")}
       ${unex ? `<span class="badge" style="color:var(--del);border-color:var(--del)">${unex} unexplained</span>` : ""}
-      ${noiseN ? `<span class="badge">${noiseN} noise</span>` : ""}</div></td>
+      ${noiseN ? `<span class="badge">${noiseN} structurally unchanged</span>` : ""}</div></td>
       <td class="bar hide-sm"><div class="minibar" style="width:${Math.max(6, 100 * (f.added + f.removed) / maxL)}%"><i style="background:var(--add);flex:${f.added}"></i><i style="background:var(--del);flex:${f.removed}"></i></div></td>
       <td class="delta mono"><span class="add">+${f.added}</span> <span class="del">−${f.removed}</span></td></tr>`;
   }
-  h += `</table></div>
+  h += `</table></div></details>
     ${chapters.length ? `<div class="ch-foot"><button class="primary" data-goto="ch-${esc(chapters[0].id)}">Start the walkthrough →</button><span class="next">${chapters.length} chapters · press <kbd>j</kbd> to move forward</span></div>` : ""}
     </section>`;
 
   chapters.forEach((c, i) => {
     const r = RISK(c.risk);
     const crumb = `<span class="chip" style="background:${color(i)}">${i + 1}</span><span class="t">${tx(c.title)}</span>`;
-    const nextLabel = i < chapters.length - 1 ? `Next: ${tx(chapters[i + 1].title)}` : (S.decisions || []).length ? "Next: Decisions" : (S.check || []).length ? "Next: Check yourself" : "Last chapter";
+    const nextLabel = i < chapters.length - 1 ? `Next: ${tx(chapters[i + 1].title)}` : "Next: Main decisions";
     h += `<section class="block chapter ${r ? "risk-" + r : ""}" id="ch-${esc(c.id)}" data-ch="${esc(c.id)}" data-label="Chapter ${i + 1} · ${esc(plain(c.title))}" data-crumb="${esc(crumb)}">
       <div class="chapter-top"><div class="eyebrow"><span class="chip" style="background:${color(i)}">${i + 1}</span>Chapter ${i + 1} of ${chapters.length}
       ${r ? `<span class="badge risk">${r} risk</span>` : ""}</div>
@@ -783,21 +814,19 @@ function renderMain() {
     h += `<div class="ch-foot"><button class="primary" data-advance="${esc(c.id)}">Mark reviewed & continue →</button><span class="next">${nextLabel}</span></div></section>`;
   });
 
-  if ((S.decisions || []).length) {
-    h += `<section class="block" id="decisions" data-label="Decisions"><div class="eyebrow">Reference</div><h3 class="ch">Decisions</h3><p class="lede">Choices made in this change, and what else was on the table.</p>`;
-    for (const d of S.decisions) h += `<div class="card decision"><h5>${tx(d.title)}</h5><div class="prose"><p class="choice">${mdInline(d.choice || "")}</p>${md(d.why)}</div>
-      ${(d.alternatives || []).length ? `<div class="alt"><b>Alternatives considered:</b><ul>${d.alternatives.map(x => `<li>${mdInline(x)}</li>`).join("")}</ul></div>` : ""}${refs(d.hunks)}</div>`;
-    h += `</section>`;
-  }
-  if ((S.check || []).length) {
-    h += `<section class="block" id="check" data-label="Check yourself"><div class="eyebrow">Reference</div><h3 class="ch">Check yourself</h3><p class="lede">Places where a human should read the code rather than trust the summary.</p>`;
-    for (const c of S.check) { const r = RISK(c.risk); h += `<div class="hints ${r ? "risk-" + r : ""}">${r ? `<span class="badge risk">${r}</span>` : ""}<div class="prose">${md(c.text)}</div>${refs(c.hunks)}</div>`; }
-    h += `</section>`;
-  }
+  h += `<section class="block" id="decisions" data-label="Main decisions"><div class="eyebrow">Design judgment</div><h3 class="ch">Main decisions</h3><p class="lede">Consequential choices and trade-offs. Inferred rationale is not confirmed author intent.</p>`;
+  for (const d of S.decisions || []) h += `<div class="card decision"><h5>${tx(d.title)}</h5><span class="badge">${esc(d.basis || "rationale not classified")}</span><div class="prose"><p class="choice">${mdInline(d.choice || "")}</p>${md(d.why)}</div>
+    ${(d.alternatives || []).length ? `<div class="alt"><b>Alternatives (documented or explicitly hypothetical):</b><ul>${d.alternatives.map(x => `<li>${mdInline(x)}</li>`).join("")}</ul></div>` : ""}${refs(d.hunks)}</div>`;
+  if (!(S.decisions || []).length) h += `<p class="lede">No material decisions identified in this walkthrough.</p>`;
+  h += `</section><section class="block" id="check" data-label="Main risks"><div class="eyebrow">Human attention</div><h3 class="ch">Main risks</h3><p class="lede">Important consequences, assumptions and checks—not all are merge blockers.</p>`;
+  for (const c of S.check || []) { const r = RISK(c.risk); h += `<div class="hints ${r ? "risk-" + r : ""}">${r ? `<span class="badge risk">${r}</span>` : ""}<div class="prose">${md(c.text)}</div>${refs(c.hunks)}</div>`; }
+  if (!(S.check || []).length) h += `<p class="lede">No material risks identified in this walkthrough; this is not a guarantee of correctness.</p>`;
+  h += `</section>`;
+  h += assessmentBlock();
   if (D.unexplained.length) h += `<section class="block unexplained" id="unexplained" data-label="Unexplained changes"><div class="eyebrow">Coverage gap</div><h3 class="ch">Unexplained changes</h3>
     <p class="lede">These hunks are in the diff but no chapter explains them. Read them directly.</p>${codeBlock(D.unexplained, "Unexplained", true)}</section>`;
-  if (D.noise.length) h += `<section class="block" id="noise" data-label="Formatting noise"><div class="eyebrow">Coverage</div><h3 class="ch">Formatting noise</h3>
-    <p class="lede">difftastic parsed both versions and found no structural change in these hunks: whitespace, wrapping, quote style and similar.</p>${codeBlock(D.noise, "Formatting-only hunks", false)}</section>`;
+  if (D.noise.length) h += `<section class="block" id="noise" data-label="Structurally unchanged"><div class="eyebrow">Change accounting</div><h3 class="ch">Structurally unchanged</h3>
+    <p class="lede">Difftastic detected no structural change in these hunks. They are likely formatting or comment changes, not proven irrelevant: comments and tool directives may affect behavior.</p>${codeBlock(D.noise, "Structurally unchanged hunks", false)}</section>`;
   if (S.pr_description) h += `<section class="block pr-desc" id="pr" data-label="PR description"><div class="eyebrow">Output</div><h3 class="ch">PR description</h3>
     <p><button id="copy-pr">Copy markdown</button></p><pre>${esc(S.pr_description)}</pre></section>`;
   $("#main").innerHTML = h;
